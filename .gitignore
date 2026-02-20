@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# uv
+.python-version
+
+# pytest
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Data (user must download separately)
+data/clean_votes.csv
+data/clean_comments.csv
+
+# IDE
+.vscode/
+.idea/
+*.swp

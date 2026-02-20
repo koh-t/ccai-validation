@@ -6,12 +6,14 @@ measurable behavioral differences in LLM outputs.
 
 Design:
   - 2 system prompts: honest constitution vs manipulated constitution
-  - 30 test queries across 6 categories that probe epistemic vs social virtues
-  - Claude API generates responses under each constitution
-  - Judge LLM scores responses on 5 dimensions
+  - 25 test queries across 5 categories that probe epistemic vs social virtues
+  - Target LLM generates responses under each constitution
+  - Judge LLM (Claude) scores responses on 5 dimensions
   - Statistical comparison of dimension scores
 
-Requires: ANTHROPIC_API_KEY environment variable.
+Supports multiple providers:
+  - anthropic: Requires ANTHROPIC_API_KEY
+  - openrouter: Requires OPENROUTER_API_KEY (OpenAI-compatible API)
 """
 
 from __future__ import annotations
@@ -215,6 +217,48 @@ def call_claude(
     return resp.content[0].text
 
 
+def call_openrouter(
+    system: str,
+    user_msg: str,
+    *,
+    model: str = "openai/gpt-4o-mini",
+    max_tokens: int = 1024,
+    temperature: float = 0.3,
+    max_retries: int = 3,
+) -> str:
+    """Call OpenRouter (OpenAI-compatible API). Requires OPENROUTER_API_KEY.
+
+    Retries on 429 with exponential backoff.
+    """
+    import openai
+    client = openai.OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=os.environ["OPENROUTER_API_KEY"],
+    )
+    for attempt in range(max_retries + 1):
+        try:
+            resp = client.chat.completions.create(
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+            )
+            content = resp.choices[0].message.content
+            if content is None:
+                raise ValueError("Empty response from model")
+            return content
+        except openai.RateLimitError:
+            if attempt < max_retries:
+                wait = 2 ** (attempt + 2)  # 4, 8, 16 seconds
+                print(f"  Rate limited, retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+
+
 def judge_response(query: str, response: str) -> dict[str, int]:
     """Use Claude as judge to score a response on 5 dimensions."""
     prompt = f"QUERY:\n{query}\n\nRESPONSE:\n{response}"
@@ -273,6 +317,7 @@ class LLMExperimentResult:
 def run_experiment(
     queries: list[dict] | None = None,
     model: str = "claude-sonnet-4-20250514",
+    provider: str = "anthropic",
     sleep: float = 0.5,
     save_path: str | None = None,
 ) -> LLMExperimentResult:
@@ -281,13 +326,20 @@ def run_experiment(
 
     Parameters
     ----------
-    queries : list of query dicts (default: QUERIES)
-    model   : Claude model to use for both generation and judging
-    sleep   : seconds between API calls (rate limiting)
+    queries  : list of query dicts (default: QUERIES)
+    model    : model ID for generation
+    provider : "anthropic" or "openrouter"
+    sleep    : seconds between API calls (rate limiting)
     save_path : if set, save raw results to this JSON file
     """
     if queries is None:
         queries = QUERIES
+
+    # Select generation function based on provider
+    if provider == "openrouter":
+        gen_fn = call_openrouter
+    else:
+        gen_fn = call_claude
 
     prompts = {
         "honest": make_system_prompt(HONEST_PRINCIPLES, "Honest Constitution"),
@@ -305,7 +357,7 @@ def run_experiment(
 
             # Generate response
             try:
-                response = call_claude(sys_prompt, q["q"], model=model)
+                response = gen_fn(sys_prompt, q["q"], model=model)
             except Exception as e:
                 print(f"  ERROR generating: {e}")
                 response = f"[ERROR: {e}]"
@@ -404,7 +456,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="Exp 7: Constitution → Prompt → LLM Behavioral Change")
     parser.add_argument("--model", default="claude-sonnet-4-20250514",
-                        help="Claude model to use")
+                        help="Model ID for generation")
+    parser.add_argument("--provider", default="anthropic",
+                        choices=["anthropic", "openrouter"],
+                        help="API provider (anthropic or openrouter)")
     parser.add_argument("--output", default="results/llm_experiment.json",
                         help="Output JSON path")
     parser.add_argument("--sleep", type=float, default=0.5,
@@ -421,8 +476,8 @@ def main():
             print(f"  [{q['cat']:15s}] {q['id']:12s}: {q['q']}")
         return
 
-    result = run_experiment(model=args.model, sleep=args.sleep,
-                            save_path=args.output)
+    result = run_experiment(model=args.model, provider=args.provider,
+                            sleep=args.sleep, save_path=args.output)
     print(f"\n{'='*55}")
     print(result.summary_table())
     print(f"{'='*55}")
